@@ -1,0 +1,9 @@
+[Unit]
+Description=Re-apply Claude Code root-bypass wrapper to ccd-cli session binaries
+Documentation=file:/root/.claude/ensure-ccd-bypass.sh
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/root/.claude/ensure-ccd-bypass.sh
+Nice=5

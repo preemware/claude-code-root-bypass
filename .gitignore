@@ -1,0 +1,5 @@
+# runtime artifacts produced by the applier — never commit these
+*.real
+*.wrap.*
+.ccd-bypass.lock
+ccd-bypass.log

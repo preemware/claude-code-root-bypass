@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch ccd-cli dir; re-apply root-bypass wrapper when the desktop app updates it
+
+[Path]
+# Fires when the directory changes (new version binary dropped by an app update)
+PathChanged=/root/.claude/remote/ccd-cli
+Unit=claude-ccd-bypass.service
+
+[Install]
+WantedBy=multi-user.target

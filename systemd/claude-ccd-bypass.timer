@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodic fallback re-apply of Claude Code root-bypass wrapper
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+Unit=claude-ccd-bypass.service
+
+[Install]
+WantedBy=timers.target
