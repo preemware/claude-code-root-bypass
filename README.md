@@ -1,7 +1,7 @@
 # claude-code-root-bypass
 
-Keep **Bypass Permissions** working in the Claude Code **desktop app** when it runs as
-**root**, and keep it working across the app's auto-updates.
+Keep **Bypass Permissions** working in Claude Code when it runs as **root** — for both
+the **desktop app** and the **native CLI** — and keep it working across auto-updates.
 
 > Symptom this fixes:
 >
@@ -9,86 +9,88 @@ Keep **Bypass Permissions** working in the Claude Code **desktop app** when it r
 
 ## Why this happens
 
-There are two *independent* root checks in the Claude Code CLI, and they need different fixes:
+There are two *independent* root checks in the Claude Code CLI:
 
 1. **The `--dangerously-skip-permissions` flag guard.** As root it hard-exits with
    *"…cannot be used with root/sudo privileges…"* unless `IS_SANDBOX=1` (or
-   `CLAUDE_CODE_BUBBLEWRAP`) is set. The internal check is roughly:
+   `CLAUDE_CODE_BUBBLEWRAP`) is set:
 
    ```js
    isRootOutsideDeliberateSandbox() =
      platform !== "win32" && getuid() === 0 && IS_SANDBOX !== "1" && !CLAUDE_CODE_BUBBLEWRAP
    ```
 
-2. **The interactive permission-mode resolver.** When a session is started
-   *interactively* (the desktop app uses `--input-format stream-json`), the resolver
-   **refuses `bypassPermissions` for root and silently downgrades to `acceptEdits`**
-   unless the session was launched with `--dangerously-skip-permissions`.
-   `IS_SANDBOX` alone does **not** satisfy this one.
+2. **The interactive permission-mode resolver.** For a `stream-json` (SDK/desktop) session,
+   as root, it **refuses `bypassPermissions` and silently downgrades to `acceptEdits`**
+   unless the session is launched with `--dangerously-skip-permissions`. The app always
+   passes `--permission-mode acceptEdits`, so without the flag a root session lands in
+   Accept Edits. `IS_SANDBOX` alone does **not** satisfy this check.
 
-The desktop "remote" server launches every session as:
+Sessions launch from **two different binary locations**, and both must be handled:
 
-```
-/root/.claude/remote/ccd-cli/<version> … --output-format stream-json --permission-mode acceptEdits
-```
+| Path | Used by |
+|---|---|
+| `/root/.claude/remote/ccd-cli/<version>` | desktop "remote" app sessions |
+| `/root/.local/share/claude/versions/<version>` | native CLI (`/root/.local/bin/claude`), **and desktop resumes of a session pinned to a now-superseded version** |
 
-— i.e. **without** `--dangerously-skip-permissions`. So as root you always land in Accept
-Edits. There is no server-side flag to change this; the only local interception point is
-the versioned `ccd-cli/<version>` binary the server executes.
+### The regressions this has survived
 
-### The regression
-
-The fix is to wrap that binary so it re-adds the flag. But the app **auto-updates** and
-drops a fresh, unwrapped binary at a **new** `ccd-cli/<newversion>` path, wiping any
-manual wrapper. That's why a one-off wrapper doesn't stay fixed.
+- **App auto-update** drops a fresh, unwrapped binary at a **new** `ccd-cli/<newversion>`
+  path, wiping any manual wrapper. → handled by the systemd watcher.
+- **Resuming a session after a version bump** can fall back to the **native install
+  binary**, which a ccd-cli-only fix never wrapped → no flag → Accept Edits.
+  → handled by wrapping the native dir too (v2).
 
 ## What this installs
 
 | File | Purpose |
 |------|---------|
-| `/root/.claude/ensure-ccd-bypass.sh` | Idempotent applier. Replaces each `ccd-cli/<version>` raw binary with a tiny wrapper that injects `--dangerously-skip-permissions` (and `export IS_SANDBOX=1`) **for `stream-json` sessions only**; preserves the original as `<version>.real`. |
-| `claude-ccd-bypass.path` (systemd) | Watches the `ccd-cli` dir and re-runs the applier **the instant an update drops a new binary**. |
-| `claude-ccd-bypass.timer` (systemd) | 5-minute fallback poll, in case the path event is missed. |
+| `/root/.claude/ensure-ccd-bypass.sh` | Idempotent applier. Replaces each versioned binary in **both** dirs with a wrapper that, **for `stream-json` sessions only**, appends `--permission-mode bypassPermissions --dangerously-skip-permissions` (last flag wins) and exports `IS_SANDBOX=1`. Original preserved as `<version>.real`. Logs every wrapper invocation. |
+| `claude-ccd-bypass.path` (systemd) | Watches **both** binary dirs; re-runs the applier the instant an update drops a new binary. |
+| `claude-ccd-bypass.timer` (systemd) | 5-minute fallback poll. |
 | `claude-ccd-bypass.service` (systemd) | The oneshot the `.path`/`.timer` trigger. |
-| `/root/.claude/ensure-root-bypass.sh` | Supplementary: keeps `IS_SANDBOX=1` in `~/.claude/settings.json`, `/etc/environment`, and `~/.bashrc` so a plain terminal `claude --dangerously-skip-permissions` works too. |
+| `/root/.claude/ensure-root-bypass.sh` | Supplementary: keeps `IS_SANDBOX=1` in `~/.claude/settings.json`, `/etc/environment`, and `~/.bashrc` for plain terminal `claude --dangerously-skip-permissions`. |
 
-The wrapper injects the flag **only** for `stream-json` sessions, so utility calls the app
-makes (`--version`, etc.) pass through untouched and never hit the flag's hard-exit.
+Non-`stream-json` calls (`claude update`, `claude mcp`, `claude doctor`, `--version`, the
+interactive TUI) pass through **untouched** — they never get the flag and never hit the
+flag's hard-exit.
+
+### Diagnostics
+
+Every wrapper invocation is logged to `/root/.claude/ccd-wrapper-invocations.log`:
+
+```
+2026-09-16T12:57:48Z bin=claude    inject=0 argc=1  args=--version
+2026-09-16T12:57:48Z bin=2.1.271   inject=1 argc=10 args=--input-format stream-json --output-format stream-json ...
+```
+
+`inject=1` means the flag/mode were appended; `inject=0` means pass-through. If a root
+session ever lands in Accept Edits again, this log shows which binary it used and whether a
+wrapper was even hit (its absence there = a launch path not yet covered).
 
 ## Install
 
-Run as **root** on the host where the Claude Code desktop backend runs:
+Run as **root** on the host where Claude Code runs:
 
 ```sh
 sudo ./install.sh
 ```
 
-This copies the applier, installs and enables the systemd units, and wraps the current
-version immediately.
-
-> **Assumes the backend runs as root** (`~/.claude` = `/root/.claude`). Paths are
-> hardcoded to `/root`; adjust the scripts/units if your setup differs.
+> **Assumes root** (`~/.claude` = `/root/.claude`, native install under `/root/.local`).
+> Paths are hardcoded to `/root`; adjust the scripts/units if your setup differs.
 
 ## Verify
 
-The fix applies to **new** sessions — a session that's already running keeps its mode.
-Start a new Code session; it should come up in Bypass Permissions. To check the resolved
-mode programmatically:
+The fix applies to **new** sessions — a running session keeps its mode. Start (or re-open)
+a session; it should come up in Bypass Permissions. To check a binary directly:
 
 ```sh
 printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}' \
-  | /root/.claude/remote/ccd-cli/"$(ls /root/.claude/remote/ccd-cli | grep -E '^[0-9]' | grep -v '\.real$' | sort -V | tail -1)" \
+  | /root/.local/share/claude/versions/"$(ls /root/.local/share/claude/versions | grep -E '^[0-9]' | grep -v '\.real$' | sort -V | tail -1)" \
     --input-format stream-json --output-format stream-json --verbose \
     --setting-sources=user,project,local --permission-mode acceptEdits --max-turns 1 2>/dev/null \
   | grep -o '"permissionMode":"[^"]*"' | head -1
 # expect: "permissionMode":"bypassPermissions"
-```
-
-Watcher activity:
-
-```sh
-systemctl status claude-ccd-bypass.path
-journalctl -u claude-ccd-bypass.service --no-pager -n 20
 ```
 
 ## Uninstall
@@ -97,11 +99,11 @@ journalctl -u claude-ccd-bypass.service --no-pager -n 20
 sudo ./uninstall.sh
 ```
 
-Disables/removes the units and restores every wrapped `ccd-cli/<version>` from its
-`.real` backup.
+Disables/removes the units and restores every wrapped binary in both dirs from its `.real`
+backup.
 
 ## Security note
 
 Bypass Permissions disables Claude Code's permission prompts entirely. Only enable it on a
 host you treat as a disposable sandbox (which is what `IS_SANDBOX=1` asserts). Do not run
-this on a machine where an agent must not be able to act without approval.
+this where an agent must not be able to act without approval.

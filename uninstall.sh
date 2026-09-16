@@ -1,5 +1,5 @@
 #!/bin/sh
-# Remove the Claude Code root-bypass fix and restore original ccd-cli binaries.
+# Remove the Claude Code root-bypass fix and restore original binaries.
 set -u
 
 [ "$(id -u)" = 0 ] || { echo "uninstall.sh must run as root (try: sudo ./uninstall.sh)" >&2; exit 1; }
@@ -11,20 +11,21 @@ rm -f /etc/systemd/system/claude-ccd-bypass.path \
       /etc/systemd/system/claude-ccd-bypass.timer
 systemctl daemon-reload
 
-echo "==> restoring original ccd-cli binaries from their .real backups"
-CCD=/root/.claude/remote/ccd-cli
-if [ -d "$CCD" ]; then
+echo "==> restoring original binaries from their .real backups (both dirs)"
+for CCD in /root/.claude/remote/ccd-cli /root/.local/share/claude/versions; do
+  [ -d "$CCD" ] || continue
   for real in "$CCD"/*.real; do
     [ -e "$real" ] || continue
     mv -f "$real" "${real%.real}" && echo "    restored ${real%.real}"
   done
-fi
+done
 
 rm -f /root/.claude/ensure-ccd-bypass.sh /root/.claude/.ccd-bypass.lock
 
 cat <<'EOF'
 
 Uninstalled. New sessions revert to the app's default (Accept Edits as root).
-Note: IS_SANDBOX=1 entries in ~/.claude/settings.json, /etc/environment, and ~/.bashrc
-are left intact. Remove them by hand if you also want those gone.
+Left intact: IS_SANDBOX=1 entries in ~/.claude/settings.json, /etc/environment,
+and ~/.bashrc; and the diagnostic log /root/.claude/ccd-wrapper-invocations.log
+(remove by hand if you want them gone).
 EOF

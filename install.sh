@@ -22,7 +22,7 @@ echo "==> enabling watcher + fallback timer"
 systemctl daemon-reload
 systemctl enable --now claude-ccd-bypass.path claude-ccd-bypass.timer
 
-echo "==> wrapping the current ccd-cli version now"
+echo "==> wrapping the current binaries now (desktop ccd-cli + native install)"
 "$CLAUDE_HOME/ensure-ccd-bypass.sh"
 
 cat <<'EOF'
